@@ -19,7 +19,7 @@
  */
 #pragma once
 
-#pragma GCC optimize("O3")
+#pragma GCC optimize("O2")
 
 #define EK3_DISABLE_INTERRUPTS 0
 
@@ -27,6 +27,7 @@
 #include <AP_Math/AP_Math.h>
 #include "AP_NavEKF3.h"
 #include <AP_Math/vectorN.h>
+#include <AP_NavEKF/AP_NavEKF_core_common.h>
 #include <AP_NavEKF3/AP_NavEKF3_Buffer.h>
 #include <AP_InertialSensor/AP_InertialSensor.h>
 
@@ -63,14 +64,14 @@
 
 class AP_AHRS;
 
-class NavEKF3_core
+class NavEKF3_core : public NavEKF_core_common
 {
 public:
     // Constructor
-    NavEKF3_core(void);
+    NavEKF3_core(NavEKF3 *_frontend);
 
     // setup this core backend
-    bool setup_core(NavEKF3 *_frontend, uint8_t _imu_index, uint8_t _core_index);
+    bool setup_core(uint8_t _imu_index, uint8_t _core_index);
     
     // Initialise the states from accelerometer and magnetometer data (if present)
     // This method can only be used when the vehicle is static
@@ -258,6 +259,20 @@ public:
     bool getRangeBeaconDebug(uint8_t &ID, float &rng, float &innov, float &innovVar, float &testRatio, Vector3f &beaconPosNED,
                              float &offsetHigh, float &offsetLow, Vector3f &posNED);
 
+    /*
+     * Writes the measurement from a yaw angle sensor
+     *
+     * yawAngle: Yaw angle of the vehicle relative to true north in radians where a positive angle is
+     * produced by a RH rotation about the Z body axis. The Yaw rotation is the first rotation in a
+     * 321 (ZYX) or a 312 (ZXY) rotation sequence as specified by the 'type' argument.
+     * yawAngleErr is the 1SD accuracy of the yaw angle measurement in radians.
+     * timeStamp_ms: System time in msec when the yaw measurement was taken. This time stamp must include
+     * all measurement lag and transmission delays.
+     * type: An integer specifying Euler rotation order used to define the yaw angle.
+     * type = 1 specifies a 312 (ZXY) rotation order, type = 2 specifies a 321 (ZYX) rotation order.
+    */
+    void writeEulerYawAngle(float yawAngle, float yawAngleErr, uint32_t timeStamp_ms, uint8_t type);
+
     // called by vehicle code to specify that a takeoff is happening
     // causes the EKF to compensate for expected barometer errors due to ground effect
     void setTakeoffExpected(bool val);
@@ -351,7 +366,7 @@ public:
 
     // get timing statistics structure
     void getTimingStatistics(struct ekf_timing &timing);
-    
+
 private:
     // Reference to the global EKF frontend for parameters
     NavEKF3 *frontend;
@@ -383,7 +398,6 @@ private:
     typedef VectorN<ftype,24> Vector24;
     typedef VectorN<ftype,25> Vector25;
     typedef VectorN<ftype,31> Vector31;
-    typedef VectorN<ftype,28> Vector28;
     typedef VectorN<VectorN<ftype,3>,3> Matrix3;
     typedef VectorN<VectorN<ftype,24>,24> Matrix24;
     typedef VectorN<VectorN<ftype,34>,50> Matrix34_50;
@@ -407,7 +421,6 @@ private:
     typedef ftype Vector23[23];
     typedef ftype Vector24[24];
     typedef ftype Vector25[25];
-    typedef ftype Vector28[28];
     typedef ftype Matrix3[3][3];
     typedef ftype Matrix24[24][24];
     typedef ftype Matrix34_50[34][50];
@@ -510,6 +523,13 @@ private:
         const Vector3f *hub_offset; // pointer to XYZ position of the wheel hub in body frame (m)
         float           delTime;    // time interval that the measurement was accumulated over (sec)
         uint32_t        time_ms;    // measurement timestamp (msec)
+    };
+        
+    struct yaw_elements {
+        float       yawAng;         // yaw angle measurement (rad)
+        float       yawAngErr;      // yaw angle 1SD measurement accuracy (rad)
+        uint32_t    time_ms;        // measurement timestamp (msec)
+        uint8_t     type;           // type specifiying Euler rotation order used, 1 = 312 (ZXY), 2 = 321 (ZYX)
     };
 
     // bias estimates for the IMUs that are enabled but not being used
@@ -668,6 +688,10 @@ private:
     void realignYawGPS();
 
     // initialise the earth magnetic field states using declination and current attitude and magnetometer measurements
+
+    // align the yaw angle for the quaternion states using the external yaw sensor
+    void alignYawAngle();
+
     // and return attitude quaternion
     Quaternion calcQuatAndFieldStates(float roll, float pitch);
 
@@ -743,7 +767,7 @@ private:
     void controlMagYawReset();
 
     // Set the NED origin to be used until the next filter reset
-    void setOrigin();
+    void setOrigin(const Location &loc);
 
     // determine if a takeoff is expected so that we can compensate for expected barometer errors due to ground effect
     bool getTakeoffExpected();
@@ -771,7 +795,7 @@ private:
     void alignMagStateDeclination();
 
     // Fuse compass measurements using a simple declination observation (doesn't require magnetic field states)
-    void fuseEulerYaw();
+    void fuseEulerYaw(bool usePredictedYaw, bool useExternalYawSensor);
 
     // Fuse declination angle to keep earth field declination from changing when we don't have earth relative observations.
     // Input is 1-sigma uncertainty in published declination
@@ -830,9 +854,6 @@ private:
     bool badIMUdata;                // boolean true if the bad IMU data is detected
 
     float gpsNoiseScaler;           // Used to scale the  GPS measurement noise and consistency gates to compensate for operation with small satellite counts
-    Vector28 Kfusion;               // Kalman gain vector
-    Matrix24 KH;                    // intermediate result used for covariance updates
-    Matrix24 KHP;                   // intermediate result used for covariance updates
     Matrix24 P;                     // covariance matrix
     imu_ring_buffer_t<imu_elements> storedIMU;      // IMU data buffer
     obs_ring_buffer_t<gps_elements> storedGPS;      // GPS data buffer
@@ -886,7 +907,6 @@ private:
     bool allMagSensorsFailed;       // true if all magnetometer sensors have timed out on this flight and we are no longer using magnetometer data
     uint32_t lastSynthYawTime_ms;   // time stamp when synthetic yaw measurement was last fused to maintain covariance health (msec)
     uint32_t ekfStartTime_ms;       // time the EKF was started (msec)
-    Matrix24 nextP;                 // Predicted covariance matrix before addition of process noise to diagonals
     Vector2f lastKnownPositionNE;   // last known position
     uint32_t lastDecayTime_ms;      // time of last decay of GPS position offset
     float velTestRatio;             // sum of squares of GPS velocity innovation divided by fail threshold
@@ -1090,8 +1110,8 @@ private:
     vel_odm_elements bodyOdmDataDelayed;  // Body  frame odometry data at the fusion time horizon
     uint32_t lastbodyVelPassTime_ms;    // time stamp when the body velocity measurement last passed innovation consistency checks (msec)
     Vector3 bodyVelTestRatio;           // Innovation test ratios for body velocity XYZ measurements
-    Vector3 varInnovBodyVel;            // Body velocity XYZ innovation variances (rad/sec)^2
-    Vector3 innovBodyVel;               // Body velocity XYZ innovations (rad/sec)
+    Vector3 varInnovBodyVel;            // Body velocity XYZ innovation variances (m/sec)^2
+    Vector3 innovBodyVel;               // Body velocity XYZ innovations (m/sec)
     uint32_t prevBodyVelFuseTime_ms;    // previous time all body velocity measurement components passed their innovation consistency checks (msec)
     uint32_t bodyOdmMeasTime_ms;        // time body velocity measurements were accepted for input to the data buffer (msec)
     bool bodyVelFusionDelayed;          // true when body frame velocity fusion has been delayed
@@ -1104,6 +1124,11 @@ private:
     wheel_odm_elements wheelOdmDataNew;       // Body frame odometry data at the current time horizon
     wheel_odm_elements wheelOdmDataDelayed;   // Body  frame odometry data at the fusion time horizon
 
+    // yaw sensor fusion
+    uint32_t yawMeasTime_ms;
+    obs_ring_buffer_t<yaw_elements> storedYawAng;
+    yaw_elements yawAngDataNew;
+    yaw_elements yawAngDataDelayed;
 
     // Range Beacon Sensor Fusion
     obs_ring_buffer_t<rng_bcn_elements> storedRangeBeacon; // Beacon range buffer

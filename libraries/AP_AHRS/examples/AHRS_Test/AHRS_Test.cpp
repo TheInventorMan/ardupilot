@@ -30,7 +30,7 @@ static AP_Logger logger{logger_bitmask};
 
 class DummyVehicle {
 public:
-    RangeFinder sonar{serial_manager};
+    RangeFinder sonar;
     NavEKF2 EKF2{&ahrs, sonar};
     NavEKF3 EKF3{&ahrs, sonar};
     AP_AHRS_NavEKF ahrs{EKF2, EKF3,
@@ -101,7 +101,7 @@ void loop(void)
     }
 }
 
-const struct AP_Param::GroupInfo        GCS_MAVLINK::var_info[] = {
+const struct AP_Param::GroupInfo        GCS_MAVLINK_Parameters::var_info[] = {
     AP_GROUPEND
 };
 GCS_Dummy _gcs;

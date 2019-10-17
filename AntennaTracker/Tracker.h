@@ -51,13 +51,10 @@
 #include <AP_Mission/AP_Mission.h>
 #include <AP_Terrain/AP_Terrain.h>
 #include <AP_Rally/AP_Rally.h>
-#include <AP_Notify/AP_Notify.h>      // Notify library
+#include <AP_Stats/AP_Stats.h>                      // statistics library
 #include <AP_BattMonitor/AP_BattMonitor.h> // Battery monitor library
 #include <AP_Airspeed/AP_Airspeed.h>
-#include <AP_BoardConfig/AP_BoardConfig.h>
-#include <AP_BoardConfig/AP_BoardConfig_CAN.h>
 #include <AP_OpticalFlow/AP_OpticalFlow.h>
-#include <AP_RangeFinder/AP_RangeFinder.h>
 #include <AP_Beacon/AP_Beacon.h>
 #include <AP_Common/AP_FWVersion.h>
 
@@ -78,7 +75,7 @@
 #include <SITL/SITL.h>
 #endif
 
-class Tracker : public AP_HAL::HAL::Callbacks {
+class Tracker : public AP_Vehicle {
 public:
     friend class GCS_MAVLINK_Tracker;
     friend class GCS_Tracker;
@@ -98,27 +95,14 @@ private:
     // main loop scheduler
     AP_Scheduler scheduler;
 
-    // notification object for LEDs, buzzers etc
-    AP_Notify notify;
-
     uint32_t start_time_ms = 0;
 
     AP_Logger logger;
 
-    AP_GPS gps;
-
-    AP_Baro barometer;
-
-    Compass compass;
-
-    AP_InertialSensor ins;
-
-    RangeFinder rng{serial_manager};
-
 // Inertial Navigation EKF
 #if AP_AHRS_NAVEKF_AVAILABLE
-    NavEKF2 EKF2{&ahrs, rng};
-    NavEKF3 EKF3{&ahrs, rng};
+    NavEKF2 EKF2{&ahrs, rangefinder};
+    NavEKF3 EKF3{&ahrs, rangefinder};
     AP_AHRS_NavEKF ahrs{EKF2, EKF3};
 #else
     AP_AHRS_DCM ahrs;
@@ -140,22 +124,15 @@ private:
     bool yaw_servo_out_filt_init = false;
     bool pitch_servo_out_filt_init = false;
 
-    AP_SerialManager serial_manager;
     GCS_Tracker _gcs; // avoid using this; use gcs()
     GCS_Tracker &gcs() { return _gcs; }
 
-    AP_BoardConfig BoardConfig;
-
-#if HAL_WITH_UAVCAN
-    // board specific config for CAN bus
-    AP_BoardConfig_CAN BoardConfig_CAN;
-#endif
+    AP_Stats stats;
 
     // Battery Sensors
     AP_BattMonitor battery{MASK_LOG_CURRENT,
                            FUNCTOR_BIND_MEMBER(&Tracker::handle_battery_failsafe, void, const char*, const int8_t),
                            nullptr};
-
     struct Location current_loc;
 
     enum ControlMode control_mode  = INITIALISING;
@@ -195,7 +172,6 @@ private:
     // setup the var_info table
     AP_Param param_loader{var_info};
 
-    uint8_t one_second_counter = 0;
     bool target_set = false;
     bool stationary = true; // are we using the start lat and log?
 
@@ -209,6 +185,7 @@ private:
     // AntennaTracker.cpp
     void one_second_loop();
     void ten_hz_logging_loop();
+    void stats_update();
 
     // control_auto.cpp
     void update_auto(void);
@@ -245,7 +222,6 @@ private:
     // sensors.cpp
     void update_ahrs();
     void compass_save();
-    void init_compass_location();
     void update_compass(void);
     void accel_cal_update(void);
     void update_GPS(void);
@@ -295,5 +271,4 @@ public:
     void mavlink_delay_cb();
 };
 
-extern const AP_HAL::HAL& hal;
 extern Tracker tracker;

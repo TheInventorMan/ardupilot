@@ -55,6 +55,7 @@ void Plane::failsafe_short_on_event(enum failsafe_state fstype, mode_reason_t re
         break;
 
     case Mode::Number::CIRCLE:
+    case Mode::Number::TAKEOFF:
     case Mode::Number::RTL:
     case Mode::Number::QLAND:
     case Mode::Number::QRTL:
@@ -123,6 +124,7 @@ void Plane::failsafe_long_on_event(enum failsafe_state fstype, mode_reason_t rea
     case Mode::Number::RTL:
     case Mode::Number::QLAND:
     case Mode::Number::QRTL:
+    case Mode::Number::TAKEOFF:
     case Mode::Number::INITIALISING:
         break;
     }
@@ -187,7 +189,9 @@ void Plane::handle_battery_failsafe(const char *type_str, const int8_t action)
             break;
 
         case Failsafe_Action_Parachute:
+#if PARACHUTE == ENABLED
             parachute_release();
+#endif
             break;
 
         case Failsafe_Action_None:

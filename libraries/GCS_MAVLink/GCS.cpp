@@ -1,10 +1,12 @@
 #include "GCS.h"
 
+#include <AC_Fence/AC_Fence.h>
 #include <AP_BoardConfig/AP_BoardConfig.h>
 #include <AP_Logger/AP_Logger.h>
 #include <AP_BattMonitor/AP_BattMonitor.h>
 #include <AP_Scheduler/AP_Scheduler.h>
 #include <AP_Baro/AP_Baro.h>
+#include <AP_AHRS/AP_AHRS.h>
 
 extern const AP_HAL::HAL& hal;
 
@@ -21,10 +23,12 @@ void GCS::get_sensor_status_flags(uint32_t &present,
 
 MissionItemProtocol_Waypoints *GCS::_missionitemprotocol_waypoints;
 MissionItemProtocol_Rally *GCS::_missionitemprotocol_rally;
+MissionItemProtocol_Fence *GCS::_missionitemprotocol_fence;
 
 const MAV_MISSION_TYPE GCS_MAVLINK::supported_mission_types[] = {
     MAV_MISSION_TYPE_MISSION,
     MAV_MISSION_TYPE_RALLY,
+    MAV_MISSION_TYPE_FENCE,
 };
 
 /*
@@ -52,10 +56,7 @@ void GCS::send_to_active_channels(uint32_t msgid, const char *pkt)
         return;
     }
     for (uint8_t i=0; i<num_gcs(); i++) {
-        GCS_MAVLINK &c = chan(i);
-        if (!c.initialised) {
-            continue;
-        }
+        GCS_MAVLINK &c = *chan(i);
         if (!c.is_active()) {
             continue;
         }
@@ -70,7 +71,7 @@ void GCS::send_to_active_channels(uint32_t msgid, const char *pkt)
 void GCS::send_named_float(const char *name, float value) const
 {
 
-    mavlink_named_value_float_t packet;
+    mavlink_named_value_float_t packet {};
     packet.time_boot_ms = AP_HAL::millis();
     packet.value = value;
     memcpy(packet.name, name, MIN(strlen(name), (uint8_t)MAVLINK_MSG_NAMED_VALUE_FLOAT_FIELD_NAME_LEN));
@@ -89,12 +90,12 @@ bool GCS::install_alternative_protocol(mavlink_channel_t c, GCS_MAVLINK::protoco
     if (c >= num_gcs()) {
         return false;
     }
-    if (chan(c).alternative.handler && handler) {
+    if (chan(c)->alternative.handler && handler) {
         // already have one installed - we may need to add support for
         // multiple alternative handlers
         return false;
     }
-    chan(c).alternative.handler = handler;
+    chan(c)->alternative.handler = handler;
     return true;
 }
 
@@ -178,6 +179,19 @@ void GCS::update_sensor_status_flags()
         control_sensors_health |= MAV_SYS_STATUS_AHRS | MAV_SYS_STATUS_SENSOR_GPS | MAV_SYS_STATUS_SENSOR_3D_ACCEL | MAV_SYS_STATUS_SENSOR_3D_GYRO;
     }
 #endif
+
+    const AC_Fence *fence = AP::fence();
+    if (fence != nullptr) {
+        if (fence->sys_status_enabled()) {
+            control_sensors_enabled |= MAV_SYS_STATUS_GEOFENCE;
+        }
+        if (fence->sys_status_present()) {
+            control_sensors_present |= MAV_SYS_STATUS_GEOFENCE;
+        }
+        if (!fence->sys_status_failed()) {
+            control_sensors_health |= MAV_SYS_STATUS_GEOFENCE;
+        }
+    }
 
     update_vehicle_sensor_status_flags();
 }

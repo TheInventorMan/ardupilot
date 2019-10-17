@@ -52,8 +52,7 @@ void Copter::init_ardupilot()
     serial_manager.init();
 
     // setup first port early to allow BoardConfig to report errors
-    gcs().chan(0).setup_uart(0);
-
+    gcs().setup_console();
 
     // Register mavlink_delay_cb, which will run anytime you have
     // more than 5ms remaining in your call to hal.scheduler->delay
@@ -68,6 +67,8 @@ void Copter::init_ardupilot()
 #if GRIPPER_ENABLED == ENABLED
     g2.gripper.init();
 #endif
+
+    fence.init();
 
     // init winch and wheel encoder
     winch_init();
@@ -111,8 +112,14 @@ void Copter::init_ardupilot()
     // allocate the motors class
     allocate_motors();
 
+    // initialise rc channels including setting mode
+    rc().init();
+
     // sets up motors and output to escs
     init_rc_out();
+
+    // check if we should enter esc calibration mode
+    esc_calibration_startup_check();
 
     // motors initialised so parameters can be sent
     ap.initialised_params = true;
@@ -143,6 +150,10 @@ void Copter::init_ardupilot()
     wp_nav->set_terrain(&terrain);
 #endif
 
+#if AC_OAPATHPLANNER_ENABLED == ENABLED
+    g2.oa.init();
+#endif
+
     attitude_control->parameter_sanity_check();
     pos_control->set_dt(scheduler.get_loop_period_s());
 
@@ -151,7 +162,7 @@ void Copter::init_ardupilot()
 
 #if MOUNT == ENABLED
     // initialise camera mount
-    camera_mount.init(serial_manager);
+    camera_mount.init();
 #endif
 
 #if PRECISION_LANDING == ENABLED
@@ -215,9 +226,6 @@ void Copter::init_ardupilot()
     // initialise AP_Logger library
     logger.setVehicle_Startup_Writer(FUNCTOR_BIND(&copter, &Copter::Log_Write_Vehicle_Startup_Messages, void));
 
-    // initialise rc channels including setting mode
-    rc().init();
-
     startup_INS_ground();
 
 #ifdef ENABLE_SCRIPTING
@@ -252,6 +260,10 @@ void Copter::init_ardupilot()
 
     // flag that initialisation has completed
     ap.initialised = true;
+
+#if AP_PARAM_KEY_DUMP
+    AP_Param::show_all(hal.console, true);
+#endif
 }
 
 
@@ -269,6 +281,32 @@ void Copter::startup_INS_ground()
 
     // reset ahrs including gyro bias
     ahrs.reset();
+}
+
+// update the harmonic notch filter center frequency dynamically
+void Copter::update_dynamic_notch()
+{
+    const float ref_freq = ins.get_gyro_harmonic_notch_center_freq_hz();
+    const float ref = ins.get_gyro_harmonic_notch_reference();
+
+    if (is_zero(ref)) {
+        ins.update_harmonic_notch_freq_hz(ref_freq);
+        return;
+    }
+
+    if (is_tradheli()) {
+#if RPM_ENABLED == ENABLED
+        if (rpm_sensor.healthy(0)) {
+            // set the harmonic notch filter frequency from the main rotor rpm
+            ins.update_harmonic_notch_freq_hz(MAX(ref_freq, rpm_sensor.get_rpm(0) * ref / 60.0f));
+        } else {
+            ins.update_harmonic_notch_freq_hz(ref_freq);
+        }
+#endif
+    } else {
+        // set the harmonic notch filter frequency approximately scaled on motor rpm implied by throttle
+        ins.update_harmonic_notch_freq_hz(ref_freq * MAX(1.0f, sqrtf(motors->get_throttle_out() / ref)));
+    }
 }
 
 // position_ok - returns true if the horizontal absolute position is ok and home position is set
@@ -372,7 +410,7 @@ void Copter::update_auto_armed()
         // if motors are armed and throttle is above zero auto_armed should be true
         // if motors are armed and we are in throw mode, then auto_armed should be true
         } else if (motors->armed() && !ap.using_interlock) {
-            if(!ap.throttle_zero || control_mode == THROW) {
+            if(!ap.throttle_zero || control_mode == Mode::Number::THROW) {
                 set_auto_armed(true);
             }
         }
@@ -543,7 +581,11 @@ void Copter::allocate_motors(void)
     }
     AP_Param::load_object_from_eeprom(pos_control, pos_control->var_info);
 
+#if AC_OAPATHPLANNER_ENABLED == ENABLED
+    wp_nav = new AC_WPNav_OA(inertial_nav, *ahrs_view, *pos_control, *attitude_control);
+#else
     wp_nav = new AC_WPNav(inertial_nav, *ahrs_view, *pos_control, *attitude_control);
+#endif
     if (wp_nav == nullptr) {
         AP_HAL::panic("Unable to allocate WPNav");
     }
@@ -577,7 +619,7 @@ void Copter::allocate_motors(void)
         attitude_control->get_rate_yaw_pid().kI().set_default(0.015);
         break;
     case AP_Motors::MOTOR_FRAME_TRI:
-        attitude_control->get_rate_yaw_pid().filt_hz().set_default(100);
+        attitude_control->get_rate_yaw_pid().filt_D_hz().set_default(100);
         break;
     default:
         break;

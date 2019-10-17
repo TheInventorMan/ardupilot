@@ -582,12 +582,17 @@ void NavEKF3_core::readGpsData()
             // Post-alignment checks
             calcGpsGoodForFlight();
 
+            // see if we can get an origin from the frontend
+            if (!validOrigin && frontend->common_origin_valid) {
+                setOrigin(frontend->common_EKF_origin);
+            }
+
             // Read the GPS location in WGS-84 lat,long,height coordinates
             const struct Location &gpsloc = gps.location();
 
             // Set the EKF origin and magnetic field declination if not previously set and GPS checks have passed
             if (gpsGoodToAlign && !validOrigin) {
-                setOrigin();
+                setOrigin(gpsloc);
 
                 // set the NE earth magnetic field states using the published declination
                 // and set the corresponding variances and covariances
@@ -604,17 +609,32 @@ void NavEKF3_core::readGpsData()
             // convert GPS measurements to local NED and save to buffer to be fused later if we have a valid origin
             if (validOrigin) {
                 gpsDataNew.pos = EKF_origin.get_distance_NE(gpsloc);
-                gpsDataNew.hgt = (float)((double)0.01 * (double)gpsloc.alt - ekfGpsRefHgt);
+                if ((frontend->_originHgtMode & (1<<2)) == 0) {
+                    gpsDataNew.hgt = (float)((double)0.01 * (double)gpsloc.alt - ekfGpsRefHgt);
+                } else {
+                    gpsDataNew.hgt = 0.01 * (gpsloc.alt - EKF_origin.alt);
+                }
                 storedGPS.push(gpsDataNew);
                 // declare GPS available for use
                 gpsNotAvailable = false;
             }
 
-            frontend->logging.log_gps = true;
+            // if the GPS has yaw data then input that as well
+            float yaw_deg, yaw_accuracy_deg;
+            if (AP::gps().gps_yaw_deg(yaw_deg, yaw_accuracy_deg)) {
+                // GPS modules are rather too optimistic about their
+                // accuracy. Set to min of 5 degrees here to prevent
+                // the user constantly receiving warnings about high
+                // normalised yaw innovations
+                const float min_yaw_accuracy_deg = 5.0f;
+                yaw_accuracy_deg = MAX(yaw_accuracy_deg, min_yaw_accuracy_deg);
+                writeEulerYawAngle(radians(yaw_deg), radians(yaw_accuracy_deg), gpsDataNew.time_ms, 2);
+            }
 
         } else {
             // report GPS fix status
             gpsCheckStatus.bad_fix = true;
+            hal.util->snprintf(prearm_fail_string, sizeof(prearm_fail_string), "Waiting for 3D fix");
         }
     }
 }
@@ -860,6 +880,30 @@ void NavEKF3_core::readRngBcnData()
     }
 
 }
+
+/********************************************************
+*              Independant yaw sensor measurements      *
+********************************************************/
+
+void NavEKF3_core::writeEulerYawAngle(float yawAngle, float yawAngleErr, uint32_t timeStamp_ms, uint8_t type)
+{
+    // limit update rate to maximum allowed by sensor buffers and fusion process
+    // don't try to write to buffer until the filter has been initialised
+    if (((timeStamp_ms - yawMeasTime_ms) < frontend->sensorIntervalMin_ms) || !statesInitialised) {
+        return;
+    }
+
+    yawAngDataNew.yawAng = yawAngle;
+    yawAngDataNew.yawAngErr = yawAngleErr;
+    yawAngDataNew.type = type;
+    yawAngDataNew.time_ms = timeStamp_ms;
+
+    storedYawAng.push(yawAngDataNew);
+
+    yawMeasTime_ms = timeStamp_ms;
+}
+
+
 
 /*
   update timing statistics structure
